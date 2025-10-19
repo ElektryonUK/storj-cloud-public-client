@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Storj.Cloud Agent Automated Installer
+# Storj.Cloud Agent Automated Installer (Verbose Debugging Version)
 #
 # This script automates the entire setup process for the client agent, including:
 # 1. Dependency checks (Docker, curl, jq).
@@ -13,6 +13,10 @@
 #
 # ==============================================================================
 
+# Enable verbose debugging: Print each command before it is executed.
+set -x
+
+# Exit immediately if a command exits with a non-zero status.
 set -e
 
 # --- Configuration & Welcome ---
@@ -85,6 +89,7 @@ login_response=$(curl -s -X POST -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\", \"password\":\"$password\"}" \
     "${DASHBOARD_API_URL}/auth/login")
 
+echo "DEBUG: Login API Response: ${login_response}"
 jwt_token=$(echo "$login_response" | jq -r '.token')
 
 if [ -z "$jwt_token" ] || [ "$jwt_token" == "null" ]; then
@@ -99,8 +104,14 @@ echo "--- Step 4: Fetching node details and registering with the dashboard ---"
 node_configs=()
 for node_info in "${nodes[@]}"; do
     container_name=$(echo "$node_info" | cut -d'|' -f1)
-    port_mapping=$(echo "$node_info" | cut -d'|' -f2 | grep -oP '0\.0\.0\.0:\K[0-9]+(?=->14002/tcp)')
+    raw_port_mapping=$(echo "$node_info" | cut -d'|' -f2)
+    echo "DEBUG: Raw port mapping for '${container_name}': ${raw_port_mapping}"
     
+    # Updated regex to be more flexible
+    port_mapping=$(echo "$raw_port_mapping" | grep -oP '(0\.0\.0\.0|\[::\]):([0-9]+)->14002/tcp' | head -n 1 | cut -d':' -f2)
+    
+    echo "DEBUG: Extracted port mapping: '${port_mapping}'"
+
     if [ -z "$port_mapping" ]; then
         echo "Warning: Could not determine API port for container '${container_name}'. Skipping."
         continue
@@ -110,7 +121,9 @@ for node_info in "${nodes[@]}"; do
     node_api_url="http://localhost:${port_mapping}"
 
     # Fetch Node ID
+    echo "DEBUG: Fetching identity from ${node_api_url}/api/sno/identity"
     identity_response=$(curl -s "${node_api_url}/api/sno/identity")
+    echo "DEBUG: Identity API Response: ${identity_response}"
     node_id=$(echo "$identity_response" | jq -r '.nodeID')
 
     if [ -z "$node_id" ] || [ "$node_id" == "null" ]; then
@@ -126,10 +139,12 @@ for node_info in "${nodes[@]}"; do
         --arg host "$node_api_url" \
         '{name: $name, storj_node_id: $id, hostname: $host}')
         
+    echo "DEBUG: Sending registration payload: ${register_payload}"
     register_response=$(curl -s -X POST -H "Authorization: Bearer $jwt_token" -H "Content-Type: application/json" \
         -d "$register_payload" \
         "${DASHBOARD_API_URL}/nodes/")
-
+    
+    echo "DEBUG: Registration API Response: ${register_response}"
     auth_token=$(echo "$register_response" | jq -r '.node.auth_token')
 
     if [ -z "$auth_token" ] || [ "$auth_token" == "null" ]; then
@@ -220,6 +235,8 @@ sudo systemctl enable --now storj-cloud-poller.service
 sudo systemctl enable --now storj-cloud-interpreter.service
 
 echo ""
+# Disable verbose debugging for the final output
+set +x
 echo "============================================="
 echo " [SUCCESS] Installation Complete!"
 echo "============================================="
@@ -227,3 +244,4 @@ echo "The agent is now running and sending data to your dashboard."
 echo "You can check the status of the services with:"
 echo "  sudo systemctl status storj-cloud-poller.service"
 echo "  sudo systemctl status storj-cloud-interpreter.service"
+
