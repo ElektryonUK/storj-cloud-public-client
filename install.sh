@@ -122,7 +122,7 @@ for (( i=1; i<=num_to_configure; i++ )); do
     node_id=""
     identity_response=""
 
-    # CRITICAL FIX: Try multiple API paths to find the Node ID
+    # Try multiple API paths to find the Node ID
     echo "Attempting to fetch Node ID..."
     
     # Attempt 1: /api/sno/identity
@@ -132,13 +132,13 @@ for (( i=1; i<=num_to_configure; i++ )); do
         echo " - Found Node ID via /api/sno/identity endpoint."
     fi
 
-    # Attempt 2: /api/sno (fallback)
+    # Attempt 2: /api/sno/ (correct path, with redirect handling)
     if [ -z "$node_id" ]; then
-        echo " - First attempt failed. Trying fallback endpoint /api/sno..."
-        identity_response=$(curl -s --connect-timeout 5 "${node_api_url}/api/sno" || true)
+        echo " - First attempt failed. Trying corrected endpoint /api/sno/..."
+        identity_response=$(curl -sL --connect-timeout 5 "${node_api_url}/api/sno/" || true)
         if echo "$identity_response" | jq -e '.nodeID' > /dev/null 2>&1; then
             node_id=$(echo "$identity_response" | jq -r '.nodeID')
-            echo " - Found Node ID via /api/sno endpoint."
+            echo " - Found Node ID via /api/sno/ endpoint."
         fi
     fi
 
