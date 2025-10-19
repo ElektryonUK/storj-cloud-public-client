@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Storj.Cloud Agent Automated Installer (Interactive Version)
+# Storj.Cloud Agent Automated Installer (Interactive & Resilient Version)
 #
 # This script automates the entire setup process for the client agent, including:
 # 1. Dependency checks.
@@ -119,34 +119,43 @@ for (( i=1; i<=num_to_configure; i++ )); do
 
     echo "Processing node '${container_name}' on port ${port_mapping}..."
     node_api_url="http://localhost:${port_mapping}"
+    node_id=""
+    identity_response=""
 
-    # Fetch Node ID with robust error handling
-    echo "Fetching Node ID from ${node_api_url}/api/sno/identity..."
-    # Use || true to prevent set -e from exiting if curl fails, so we can handle the error gracefully
+    # CRITICAL FIX: Try multiple API paths to find the Node ID
+    echo "Attempting to fetch Node ID..."
+    
+    # Attempt 1: /api/sno/identity
     identity_response=$(curl -s --connect-timeout 5 "${node_api_url}/api/sno/identity" || true)
+    if echo "$identity_response" | jq -e '.nodeID' > /dev/null 2>&1; then
+        node_id=$(echo "$identity_response" | jq -r '.nodeID')
+        echo " - Found Node ID via /api/sno/identity endpoint."
+    fi
 
-    # CRITICAL FIX: Validate the response before parsing with jq
-    if ! echo "$identity_response" | jq -e . > /dev/null 2>&1; then
+    # Attempt 2: /api/sno (fallback)
+    if [ -z "$node_id" ]; then
+        echo " - First attempt failed. Trying fallback endpoint /api/sno..."
+        identity_response=$(curl -s --connect-timeout 5 "${node_api_url}/api/sno" || true)
+        if echo "$identity_response" | jq -e '.nodeID' > /dev/null 2>&1; then
+            node_id=$(echo "$identity_response" | jq -r '.nodeID')
+            echo " - Found Node ID via /api/sno endpoint."
+        fi
+    fi
+
+    if [ -z "$node_id" ]; then
         echo "----------------------------------------------------------------"
-        echo "ERROR: Received an invalid or empty response from the node API."
-        echo "URL: ${node_api_url}/api/sno/identity"
-        echo "Response: ${identity_response}"
+        echo "ERROR: Could not automatically determine Node ID."
+        echo "The API at '${node_api_url}' did not return a valid response."
+        echo "Last Response: ${identity_response}"
         echo ""
         echo "Please check the following:"
         echo " 1. Is the Storj node container '${container_name}' running?"
         echo " 2. Is the API port '${port_mapping}' correct and accessible?"
-        echo " 3. Is there a firewall blocking the connection?"
         echo "----------------------------------------------------------------"
         echo "Skipping this node."
         continue
     fi
     
-    node_id=$(echo "$identity_response" | jq -r '.nodeID')
-
-    if [ -z "$node_id" ] || [ "$node_id" == "null" ]; then
-        echo "Warning: Could not parse Node ID from the API response. Skipping."
-        continue
-    fi
     echo " - Node ID found: ${node_id}"
 
     # Register Node with Dashboard
