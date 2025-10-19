@@ -1,20 +1,16 @@
 #!/bin/bash
 
 # ==============================================================================
-# Storj.Cloud Agent Automated Installer (Verbose Debugging Version)
+# Storj.Cloud Agent Automated Installer (Interactive Version)
 #
 # This script automates the entire setup process for the client agent, including:
-# 1. Dependency checks (Docker, curl, jq).
-# 2. Automatic detection of Storj nodes running in Docker.
-# 3. Fetching Node IDs via the local node API.
-# 4. Prompting the user to log into their Storj.Cloud account.
-# 5. Automatically registering the detected nodes with the dashboard.
-# 6. Creating and enabling systemd services for the agent.
+# 1. Dependency checks.
+# 2. Automatic detection of Storj node containers.
+# 3. An interactive wizard to confirm nodes and enter API ports.
+# 4. Automatic registration of nodes with the Storj.Cloud dashboard.
+# 5. Creation and enabling of systemd services for the agent.
 #
 # ==============================================================================
-
-# Enable verbose debugging: Print each command before it is executed.
-set -x
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
@@ -29,7 +25,7 @@ VENV_DIR="${AGENT_DIR}/venv"
 echo "========================================="
 echo " Storj.Cloud Agent Installer"
 echo "========================================="
-echo "This script will automatically detect and configure your Storj nodes."
+echo "This script will help you detect and configure your Storj nodes."
 echo ""
 
 # --- Helper Functions ---
@@ -61,20 +57,16 @@ echo ""
 
 # --- Step 2: Detect Storj Nodes in Docker ---
 echo "--- Step 2: Detecting Storj nodes running in Docker ---"
-nodes=()
-while IFS= read -r line; do
-    nodes+=("$line")
-done < <(docker ps -a --filter "ancestor=storjlabs/storagenode" --format '{{.Names}}|{{.Ports}}')
+mapfile -t detected_nodes < <(docker ps -a --filter "ancestor=storjlabs/storagenode" --format '{{.Names}}')
 
-if [ ${#nodes[@]} -eq 0 ]; then
+if [ ${#detected_nodes[@]} -eq 0 ]; then
     echo "No running or stopped Storj node containers found. Exiting."
     exit 1
 fi
 
-echo "Found ${#nodes[@]} Storj node container(s):"
-for node_info in "${nodes[@]}"; do
-    container_name=$(echo "$node_info" | cut -d'|' -f1)
-    echo " - ${container_name}"
+echo "Found the following ${#detected_nodes[@]} Storj node container(s):"
+for name in "${detected_nodes[@]}"; do
+    echo " - ${name}"
 done
 echo ""
 
@@ -89,7 +81,6 @@ login_response=$(curl -s -X POST -H "Content-Type: application/json" \
     -d "{\"email\":\"$email\", \"password\":\"$password\"}" \
     "${DASHBOARD_API_URL}/auth/login")
 
-echo "DEBUG: Login API Response: ${login_response}"
 jwt_token=$(echo "$login_response" | jq -r '.token')
 
 if [ -z "$jwt_token" ] || [ "$jwt_token" == "null" ]; then
@@ -99,21 +90,30 @@ fi
 echo "Login successful."
 echo ""
 
-# --- Step 4: Fetch Node Details and Register ---
-echo "--- Step 4: Fetching node details and registering with the dashboard ---"
-node_configs=()
-for node_info in "${nodes[@]}"; do
-    container_name=$(echo "$node_info" | cut -d'|' -f1)
-    raw_port_mapping=$(echo "$node_info" | cut -d'|' -f2)
-    echo "DEBUG: Raw port mapping for '${container_name}': ${raw_port_mapping}"
-    
-    # Updated regex to be more flexible
-    port_mapping=$(echo "$raw_port_mapping" | grep -oP '(0\.0\.0\.0|\[::\]):([0-9]+)->14002/tcp' | head -n 1 | cut -d':' -f2)
-    
-    echo "DEBUG: Extracted port mapping: '${port_mapping}'"
+# --- Step 4: Interactive Node Configuration ---
+echo "--- Step 4: Interactive Node Configuration ---"
+read -p "How many nodes would you like to configure now? " num_to_configure
 
-    if [ -z "$port_mapping" ]; then
-        echo "Warning: Could not determine API port for container '${container_name}'. Skipping."
+node_configs=()
+for (( i=1; i<=num_to_configure; i++ )); do
+    echo ""
+    echo "--- Configuring Node ${i} of ${num_to_configure} ---"
+    
+    # Let user choose from detected nodes
+    echo "Please choose a container to configure:"
+    select container_name in "${detected_nodes[@]}"; do
+        if [[ -n "$container_name" ]]; then
+            break
+        else
+            echo "Invalid selection. Please try again."
+        fi
+    done
+
+    # Ask for the API port
+    read -p "Please enter the public API port for '${container_name}' (e.g., 14000): " port_mapping
+
+    if ! [[ "$port_mapping" =~ ^[0-9]+$ ]]; then
+        echo "Invalid port number. Skipping this node."
         continue
     fi
 
@@ -121,30 +121,28 @@ for node_info in "${nodes[@]}"; do
     node_api_url="http://localhost:${port_mapping}"
 
     # Fetch Node ID
-    echo "DEBUG: Fetching identity from ${node_api_url}/api/sno/identity"
-    identity_response=$(curl -s "${node_api_url}/api/sno/identity")
-    echo "DEBUG: Identity API Response: ${identity_response}"
+    echo "Fetching Node ID from ${node_api_url}/api/sno/identity..."
+    identity_response=$(curl -s --connect-timeout 5 "${node_api_url}/api/sno/identity")
     node_id=$(echo "$identity_response" | jq -r '.nodeID')
 
     if [ -z "$node_id" ] || [ "$node_id" == "null" ]; then
-        echo "Warning: Could not fetch Node ID for '${container_name}'. Skipping."
+        echo "Warning: Could not fetch Node ID for '${container_name}'. Is the node running and the port correct? Skipping."
         continue
     fi
-    echo " - Node ID: ${node_id}"
+    echo " - Node ID found: ${node_id}"
 
     # Register Node with Dashboard
+    echo "Registering '${container_name}' with the dashboard..."
     register_payload=$(jq -n \
         --arg name "$container_name" \
         --arg id "$node_id" \
         --arg host "$node_api_url" \
         '{name: $name, storj_node_id: $id, hostname: $host}')
         
-    echo "DEBUG: Sending registration payload: ${register_payload}"
     register_response=$(curl -s -X POST -H "Authorization: Bearer $jwt_token" -H "Content-Type: application/json" \
         -d "$register_payload" \
         "${DASHBOARD_API_URL}/nodes/")
     
-    echo "DEBUG: Registration API Response: ${register_response}"
     auth_token=$(echo "$register_response" | jq -r '.node.auth_token')
 
     if [ -z "$auth_token" ] || [ "$auth_token" == "null" ]; then
@@ -164,10 +162,15 @@ for node_info in "${nodes[@]}"; do
         --arg logPath "$log_file_path" \
         '{name: $name, node_api_url: $apiUrl, auth_token: $authToken, log_file_path: $logPath}')
     node_configs+=("$config_entry")
-    echo ""
 done
 
+if [ ${#node_configs[@]} -eq 0 ]; then
+    echo "No nodes were successfully configured. Exiting."
+    exit 1
+fi
+
 # --- Step 5: Create Configuration File ---
+echo ""
 echo "--- Step 5: Creating agent configuration file ---"
 sudo mkdir -p "$CONFIG_DIR"
 config_json=$(jq -n --argjson nodes "[$(IFS=,; echo "${node_configs[*]}")]" '{nodes: $nodes}')
@@ -179,6 +182,7 @@ echo ""
 # --- Step 6: Install Agent Files ---
 echo "--- Step 6: Installing agent scripts and dependencies ---"
 sudo mkdir -p "$AGENT_DIR"
+# Assuming script is run from a dir containing these files
 sudo cp api_poller.py log_interpreter.py requirements.txt "$AGENT_DIR/"
 
 echo "Creating Python virtual environment..."
@@ -235,8 +239,6 @@ sudo systemctl enable --now storj-cloud-poller.service
 sudo systemctl enable --now storj-cloud-interpreter.service
 
 echo ""
-# Disable verbose debugging for the final output
-set +x
 echo "============================================="
 echo " [SUCCESS] Installation Complete!"
 echo "============================================="
