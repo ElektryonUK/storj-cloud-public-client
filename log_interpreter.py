@@ -39,37 +39,43 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     # Try to parse JSON from the message part
     try:
         json_message = json.loads(data['message'])
-        data['message'] = json_message.get('error', data['message']) # Use error field if present
+        # Prefer a specific 'error' or 'message' field from the JSON if it exists
+        if 'error' in json_message:
+            data['message'] = json_message['error']
+        elif 'message' in json_message:
+            data['message'] = json_message['message']
+        
         data.update(json_message)
-    except json.JSONDecodeError:
-        # It's not a JSON message, which is fine.
+    except (json.JSONDecodeError, TypeError):
+        # It's not a JSON message or message is not a string, which is fine.
         pass
 
     return {
         'timestamp': data['timestamp'],
         'severity': data['level'],
-        'message': data.get('message', ''),
+        'message': str(data.get('message', '')), # Ensure message is a string
         'remote_ip': data.get('remote_addr') # Specifically for heatmap
     }
 
 def follow_log_file(filepath: str):
     """Yields new lines from a file as they are written."""
-    try:
-        with open(filepath, 'r') as file:
-            # Go to the end of the file
-            file.seek(0, 2)
-            while True:
-                line = file.readline()
-                if not line:
-                    time.sleep(0.1) # Wait for new lines
-                    continue
-                yield line
-    except FileNotFoundError:
-        logging.error(f"Log file not found: {filepath}. It will be retried.")
-        time.sleep(30) # Wait before trying to open again
-    except Exception as e:
-        logging.error(f"Error reading log file {filepath}: {e}")
-        time.sleep(30)
+    while True:
+        try:
+            with open(filepath, 'r') as file:
+                # Go to the end of the file
+                file.seek(0, 2)
+                while True:
+                    line = file.readline()
+                    if not line:
+                        time.sleep(0.1) # Wait for new lines
+                        continue
+                    yield line
+        except FileNotFoundError:
+            logging.error(f"Log file not found: {filepath}. It will be retried in 30 seconds.")
+            time.sleep(30) # Wait before trying to open again
+        except Exception as e:
+            logging.error(f"Error reading log file {filepath}: {e}. Retrying in 30 seconds.")
+            time.sleep(30)
 
 
 # --- Data Submission ---
@@ -104,7 +110,7 @@ def process_node_logs(node_config: Dict[str, Any]):
 
     if not all([log_path, auth_token]):
         logging.error(f"Node '{node_name}' is missing 'log_file_path' or 'auth_token'. Cannot process logs.")
-        return
+        return # This will stop the thread/process for this node
     
     logging.info(f"Starting log interpreter for node: {node_name} (File: {log_path})")
     
@@ -137,31 +143,35 @@ def load_node_config() -> List[Dict[str, str]]:
         return []
 
 def main():
-    """Main function to start a log processing thread for each configured node."""
+    """Main function to start and manage log processing."""
     logging.info("Starting Storj.Cloud Log Interpreter Service.")
 
     if not DASHBOARD_API_URL:
         logging.error("FATAL: DASHBOARD_API_URL is not set. Exiting.")
         return
 
-    # In a real-world high-performance scenario, we'd use multiprocessing or threading
-    # to handle each log file independently. For simplicity and robustness here,
-    # we'll cycle through them in a single process.
-    
-    nodes = load_node_config()
-    if not nodes:
-        logging.error(f"No nodes configured in {CONFIG_FILE_PATH}. Exiting.")
-        return
-
-    # We will simply start the main processing function for the first node
-    # A multi-threaded/process approach is an enhancement for later.
-    if nodes:
+    # CRITICAL FIX: Instead of exiting, the main loop will now periodically check the config.
+    # This makes the service resilient if the config file is temporarily unavailable or empty.
+    while True:
+        nodes = load_node_config()
+        if not nodes:
+            logging.warning(f"No nodes configured in {CONFIG_FILE_PATH}. Will check again in {LOG_POLL_INTERVAL} seconds.")
+            time.sleep(LOG_POLL_INTERVAL)
+            continue
+            
+        # For simplicity, we'll process the first node's log file.
+        # A multi-threaded/process approach would be an enhancement for multiple log files.
+        # This design assumes the user will run one agent per node if needed,
+        # or that only one log file needs active tailing.
+        logging.info(f"Found {len(nodes)} node(s) in config. Processing the first entry.")
         process_node_logs(nodes[0])
-    
-    # If there were multiple nodes, a more complex manager would be needed.
-    # For now, this handles the common single-server, multi-node case by
-    # simply starting one interpreter. The script can be run in parallel for more.
+
+        # If process_node_logs ever returns (e.g., due to an unrecoverable error),
+        # the outer loop will wait and then try to reload the config and start again.
+        logging.error("Log processing for node stopped unexpectedly. Restarting main loop after a delay.")
+        time.sleep(LOG_POLL_INTERVAL)
 
 
 if __name__ == "__main__":
     main()
+
