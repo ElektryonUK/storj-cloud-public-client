@@ -2,17 +2,16 @@ import os
 import requests
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # --- Configuration ---
-# This script uses the same configuration as the main agent.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 CONFIG_FILE_PATH = os.getenv('CONFIG_FILE_PATH', '/etc/storj-cloud-agent/config.json')
 
-# --- Helper Functions (copied from api_poller.py) ---
+# --- Helper Functions ---
 
 def load_node_config() -> List[Dict[str, str]]:
     """Loads the multi-node configuration from the JSON file."""
@@ -27,58 +26,95 @@ def load_node_config() -> List[Dict[str, str]]:
         logging.error(f"Error decoding JSON from configuration file: {e}")
         return []
 
-def fetch_node_data(node_api_url: str) -> Dict[str, Any]:
-    """Fetches combined data from the node's API."""
+def fetch_api_data(base_url: str, endpoint: str) -> Dict[str, Any]:
+    """
+    Fetches data from a specific API endpoint with error handling.
+    Requests library handles redirects by default.
+    """
+    url = f"{base_url}{endpoint}"
     try:
-        response = requests.get(f"{node_api_url}/sno", timeout=10)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        logging.error(f"Could not fetch data from {node_api_url}/sno: {e}")
+        logging.error(f"Could not fetch data from {url}: {e}")
+        return {}
+    except json.JSONDecodeError:
+        logging.error(f"Invalid JSON response from {url}")
         return {}
 
-def format_stats_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+def aggregate_and_format_payload(sno_data: Dict, satellites_data: List, payout_data: Dict) -> Dict[str, Any]:
     """
-    Formats the raw node data into the structure expected by the dashboard API.
+    Aggregates data from all endpoints and computes derived metrics.
     """
-    if not data or not isinstance(data, dict):
-        logging.warning("Received empty or invalid data from node API.")
-        return {}
-    
-    disk_space = data.get('diskSpace') or {}
-    bandwidth = data.get('bandwidth') or {}
-    
-    first_satellite = {}
-    satellites = data.get('satellites')
-    if isinstance(satellites, list) and len(satellites) > 0:
-        first_satellite = satellites[0] if isinstance(satellites[0], dict) else {}
+    # --- Node Info ---
+    node_id = sno_data.get('nodeID', 'N/A')
+    wallet = sno_data.get('wallet', 'N/A')
+    version = sno_data.get('version', 'N/A')
 
+    # --- Disk Space Calculation ---
+    disk_space = sno_data.get('diskSpace', {}) or {}
+    disk_used = disk_space.get('used', 0)
+    disk_available = disk_space.get('available', 0)
+    disk_total = disk_used + disk_available  # As per requirement
+    disk_trash = disk_space.get('trash', 0)
+
+    # --- Bandwidth ---
+    bandwidth = sno_data.get('bandwidth', {}) or {}
+    bandwidth_ingress = bandwidth.get('ingress', 0)
+    bandwidth_egress = bandwidth.get('egress', 0)
+
+    # --- Satellite Score Averaging ---
+    total_uptime = 0.0
+    total_audit = 0.0
+    total_suspension = 0.0
+    satellite_count = 0
+    if isinstance(satellites_data, list) and len(satellites_data) > 0:
+        satellite_count = len(satellites_data)
+        for sat in satellites_data:
+            if isinstance(sat, dict):
+                total_uptime += sat.get('uptimeScore', 0.0)
+                total_audit += sat.get('auditScore', 0.0)
+                total_suspension += sat.get('suspensionScore', 0.0)
+    
+    avg_uptime = total_uptime / satellite_count if satellite_count > 0 else 0.0
+    avg_audit = total_audit / satellite_count if satellite_count > 0 else 0.0
+    avg_suspension = total_suspension / satellite_count if satellite_count > 0 else 1.0
+
+    # --- Payout Data ---
+    payout_month = payout_data.get('currentMonth', {}) or {}
+    estimated_payout = payout_month.get('total', 0.0)
+    held_amount = payout_month.get('held', 0.0)
+
+    # --- Assemble Final Payload ---
     return {
-        "version": data.get('version', 'N/A'),
-        "disk_total": disk_space.get('total', 0),
-        "disk_used": disk_space.get('used', 0),
-        "disk_trash": disk_space.get('trash', 0),
-        "bandwidth_ingress": bandwidth.get('ingress', 0),
-        "bandwidth_egress": bandwidth.get('egress', 0),
-        "uptime_score": first_satellite.get('uptimeScore', 0.0),
-        "audit_score": first_satellite.get('auditScore', 0.0),
-        "suspension_score": first_satellite.get('suspensionScore', 0.0),
-        "estimated_payout": data.get('estimatedPayout', 0.0),
-        "held_amount": data.get('heldAmount', 0.0)
+        "node_id": node_id,
+        "wallet": wallet,
+        "version": version,
+        "disk_total": disk_total,
+        "disk_used": disk_used,
+        "disk_trash": disk_trash,
+        "bandwidth_ingress": bandwidth_ingress,
+        "bandwidth_egress": bandwidth_egress,
+        "uptime_score": avg_uptime,
+        "audit_score": avg_audit,
+        "suspension_score": avg_suspension,
+        "estimated_payout": estimated_payout,
+        "held_amount": held_amount
     }
 
 # --- Main Test Execution Logic ---
 def main():
     """Main function to run the diagnostic test."""
-    print("--- Starting Storj.Cloud Agent Diagnostic Test ---")
+    print("--- Starting Storj.Cloud Agent Comprehensive Diagnostic Test ---")
     
     nodes = load_node_config()
     if not nodes:
-        print("\nERROR: No nodes found in the configuration file. Please run the installer first.")
+        print(f"\nERROR: No nodes found in '{CONFIG_FILE_PATH}'. Please run the installer first.")
         return
 
-    print(f"\nFound {len(nodes)} node(s) in '{CONFIG_FILE_PATH}'. Processing each one...")
-    print("-" * 50)
+    print(f"\nFound {len(nodes)} node(s). Processing each one...")
+    print("-" * 60)
 
     for node in nodes:
         node_name = node.get('name', 'Unknown')
@@ -86,35 +122,40 @@ def main():
         
         if not node_api:
             print(f"\nSkipping node '{node_name}' due to missing 'node_api_url'.")
-            print("-" * 50)
+            print("-" * 60)
             continue
 
         print(f"\n1. Testing Node: '{node_name}'")
-        print(f"   Fetching data from API endpoint: {node_api}/sno")
+        print(f"   Using Base API URL: {node_api}")
 
-        # Step 1: Get the raw data from the Storj Node API
-        raw_data = fetch_node_data(node_api)
+        # --- Step 1: Fetch data from all endpoints ---
+        print("\n2. Fetching data from all required API endpoints...")
+        sno_data = fetch_api_data(node_api, '/sno')
+        satellites_data = fetch_api_data(node_api, '/sno/satellites')
+        payout_data = fetch_api_data(node_api, '/sno/estimated-payout')
         
-        print("\n2. RAW RESPONSE from Storj Node API:")
-        # Use json.dumps for pretty printing
-        print(json.dumps(raw_data, indent=4))
+        print("   - /api/sno: " + ("Success" if sno_data else "Failed"))
+        print("   - /api/sno/satellites: " + ("Success" if satellites_data else "Failed"))
+        print("   - /api/sno/estimated-payout: " + ("Success" if payout_data else "Failed"))
         
-        if not raw_data:
-            print("\n   -> Skipping formatting because the raw response was empty.")
-            print("-" * 50)
+        if not sno_data:
+            print("\n   -> CRITICAL: Cannot proceed without data from /api/sno. Skipping node.")
+            print("-" * 60)
             continue
+            
+        # --- Step 2: Aggregate, compute, and format the payload ---
+        print("\n3. Aggregating and formatting the final payload...")
+        final_payload = aggregate_and_format_payload(sno_data, satellites_data, payout_data)
 
-        # Step 2: Format that raw data for our server
-        stats_payload = format_stats_payload(raw_data)
-
-        print("\n3. FORMATTED PAYLOAD (what would be sent to the server):")
-        print(json.dumps(stats_payload, indent=4))
+        print("\n4. FINAL AGGREGATED PAYLOAD:")
+        print(json.dumps(final_payload, indent=4))
 
         print("\n--- Test for this node complete ---")
-        print("-" * 50)
+        print("-" * 60)
         
     print("\n--- Diagnostic Test Finished ---")
 
 
 if __name__ == "__main__":
     main()
+
