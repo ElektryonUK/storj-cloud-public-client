@@ -27,24 +27,25 @@ def load_node_config() -> List[Dict[str, str]]:
     except FileNotFoundError:
         logging.error(f"Configuration file not found at: {CONFIG_FILE_PATH}")
         return []
-    except json.JSONDecodeError:
-        logging.error(f"Error decoding JSON from configuration file: {CONFIG_FILE_PATH}")
+    except json.JSONDecodeError as e:
+        logging.error(f"Error decoding JSON from configuration file: {e}")
         return []
 
 def fetch_node_data(node_api_url: str) -> Dict[str, Any]:
     """Fetches combined data from the node's API."""
     try:
-        # Using -L to follow redirects is safer. The endpoint is /api/sno/
-        response = requests.get(f"{node_api_url}/sno/", timeout=10)
+        # The /api/sno/ endpoint should handle redirects automatically if needed.
+        # Adding -L to curl was for bash; requests does this by default.
+        response = requests.get(f"{node_api_url}/sno", timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        logging.error(f"Could not fetch data from {node_api_url}/sno/: {e}")
+        logging.error(f"Could not fetch data from {node_api_url}/sno: {e}")
         return {}
 
 def format_stats_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    DEFINITIVE FIX: Formats the raw node data with maximum resilience.
+    DEFINITIVE FIX v2: Formats the raw node data with maximum resilience.
     This function safely navigates the JSON structure, providing defaults
     at every level to prevent errors.
     """
@@ -62,6 +63,7 @@ def format_stats_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(satellites, list) and len(satellites) > 0:
         first_satellite = satellites[0] if isinstance(satellites[0], dict) else {}
 
+    # Ensure all required fields are present, even if they are default values.
     return {
         "version": data.get('version', 'N/A'),
         "disk_total": disk_space.get('total', 0),
@@ -82,8 +84,8 @@ def submit_stats_to_dashboard(node_auth_token: str, payload: Dict[str, Any]):
         logging.error("DASHBOARD_API_URL environment variable not set. Cannot submit data.")
         return
 
-    if not payload:
-        logging.warning("Payload is empty, skipping submission.")
+    if not payload or not payload.get("version"): # Quick check for valid payload
+        logging.warning(f"Payload is empty or invalid, skipping submission. Payload: {payload}")
         return
 
     headers = {
@@ -96,9 +98,11 @@ def submit_stats_to_dashboard(node_auth_token: str, payload: Dict[str, Any]):
         logging.info(f"Successfully submitted stats for node token ending in ...{node_auth_token[-4:]}")
     except requests.exceptions.RequestException as e:
         logging.error(f"Failed to submit stats to dashboard: {e}")
+        if e.response is not None:
+            logging.error(f"Server responded with: {e.response.text}")
+
 
 # --- Main Execution Logic ---
-
 def main():
     """Main loop to poll nodes and submit data."""
     logging.info("Starting Storj.Cloud API Poller Service.")
