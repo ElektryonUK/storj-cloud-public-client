@@ -34,31 +34,33 @@ def load_node_config() -> List[Dict[str, str]]:
 def fetch_node_data(node_api_url: str) -> Dict[str, Any]:
     """Fetches combined data from the node's API."""
     try:
-        # Using -L to follow redirects is safer.
-        response = requests.get(f"{node_api_url}/sno", timeout=10)
+        # Using -L to follow redirects is safer. The endpoint is /api/sno/
+        response = requests.get(f"{node_api_url}/sno/", timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        logging.error(f"Could not fetch data from {node_api_url}/sno: {e}")
+        logging.error(f"Could not fetch data from {node_api_url}/sno/: {e}")
         return {}
 
 def format_stats_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Formats the raw node data into the structure expected by the dashboard API.
-    This version is highly resilient and extracts more data points.
+    DEFINITIVE FIX: Formats the raw node data with maximum resilience.
+    This function safely navigates the JSON structure, providing defaults
+    at every level to prevent errors.
     """
-    if not data:
+    if not data or not isinstance(data, dict):
+        logging.warning("Received empty or invalid data from node API.")
         return {}
     
-    # Safely get nested satellite data
+    # Safely get nested dictionaries, defaulting to an empty dict if a key is missing or the value is None
+    disk_space = data.get('diskSpace') or {}
+    bandwidth = data.get('bandwidth') or {}
+    
+    # Safely get the first satellite's data
     first_satellite = {}
-    satellites = data.get('satellites', [])
-    if satellites and isinstance(satellites, list) and len(satellites) > 0:
+    satellites = data.get('satellites')
+    if isinstance(satellites, list) and len(satellites) > 0:
         first_satellite = satellites[0] if isinstance(satellites[0], dict) else {}
-
-    # DEFINITIVE FIX: Use nested .get() for every value and handle potential None types.
-    disk_space = data.get('diskSpace', {}) or {}
-    bandwidth = data.get('bandwidth', {}) or {}
 
     return {
         "version": data.get('version', 'N/A'),
