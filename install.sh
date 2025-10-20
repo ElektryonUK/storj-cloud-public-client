@@ -46,10 +46,12 @@ fi
 echo "Dependencies found."
 echo ""
 
-# --- Step 2: Create Hardcoded Configuration File ---
-echo "--- Step 2: Creating placeholder agent configuration file ---"
+# --- Step 2: Create Configuration File (if it doesn't exist) ---
+echo "--- Step 2: Checking for agent configuration file ---"
 sudo mkdir -p "$CONFIG_DIR"
-sudo bash -c "cat > $CONFIG_FILE" <<EOL
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Configuration file not found. Creating a new placeholder."
+    sudo bash -c "cat > $CONFIG_FILE" <<EOL
 {
     "nodes": [
         {
@@ -61,9 +63,12 @@ sudo bash -c "cat > $CONFIG_FILE" <<EOL
     ]
 }
 EOL
-sudo chmod 644 "$CONFIG_FILE"
-echo "Placeholder configuration saved to ${CONFIG_FILE}"
-echo "IMPORTANT: Please edit this file with your actual auth_token and log_file_path."
+    sudo chmod 644 "$CONFIG_FILE"
+    echo "Placeholder configuration saved to ${CONFIG_FILE}"
+    echo "IMPORTANT: Please edit this file with your actual auth_token and log_file_path before the agent can work."
+else
+    echo "Existing configuration file found at ${CONFIG_FILE}. Skipping creation."
+fi
 echo ""
 
 # --- Step 3: Install Agent Files ---
