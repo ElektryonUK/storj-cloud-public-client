@@ -32,9 +32,9 @@ def load_node_config() -> List[Dict[str, str]]:
         return []
 
 def fetch_node_data(node_api_url: str) -> Dict[str, Any]:
-    """Fetches combined data from the node's /api/sno endpoint."""
+    """Fetches combined data from the node's API."""
     try:
-        # Use -L to follow redirects, which is common
+        # Using -L to follow redirects is safer.
         response = requests.get(f"{node_api_url}/sno", timeout=10)
         response.raise_for_status()
         return response.json()
@@ -45,7 +45,7 @@ def fetch_node_data(node_api_url: str) -> Dict[str, Any]:
 def format_stats_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Formats the raw node data into the structure expected by the dashboard API.
-    This function is now highly resilient to missing keys.
+    This version is highly resilient and extracts more data points.
     """
     if not data:
         return {}
@@ -56,14 +56,17 @@ def format_stats_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     if satellites and isinstance(satellites, list) and len(satellites) > 0:
         first_satellite = satellites[0] if isinstance(satellites[0], dict) else {}
 
-    # CRITICAL FIX: Use nested .get() for every value to prevent errors
-    # and provide a default of 0 or 0.0 if any key is missing.
+    # DEFINITIVE FIX: Use nested .get() for every value and handle potential None types.
+    disk_space = data.get('diskSpace', {}) or {}
+    bandwidth = data.get('bandwidth', {}) or {}
+
     return {
-        "disk_total": data.get('diskSpace', {}).get('total', 0),
-        "disk_used": data.get('diskSpace', {}).get('used', 0),
-        "disk_trash": data.get('diskSpace', {}).get('trash', 0),
-        "bandwidth_ingress": data.get('bandwidth', {}).get('ingress', 0),
-        "bandwidth_egress": data.get('bandwidth', {}).get('egress', 0),
+        "version": data.get('version', 'N/A'),
+        "disk_total": disk_space.get('total', 0),
+        "disk_used": disk_space.get('used', 0),
+        "disk_trash": disk_space.get('trash', 0),
+        "bandwidth_ingress": bandwidth.get('ingress', 0),
+        "bandwidth_egress": bandwidth.get('egress', 0),
         "uptime_score": first_satellite.get('uptimeScore', 0.0),
         "audit_score": first_satellite.get('auditScore', 0.0),
         "suspension_score": first_satellite.get('suspensionScore', 0.0),
