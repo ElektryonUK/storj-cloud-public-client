@@ -34,6 +34,7 @@ def load_node_config() -> List[Dict[str, str]]:
 def fetch_node_data(node_api_url: str) -> Dict[str, Any]:
     """Fetches combined data from the node's /api/sno endpoint."""
     try:
+        # Use -L to follow redirects, which is common
         response = requests.get(f"{node_api_url}/sno", timeout=10)
         response.raise_for_status()
         return response.json()
@@ -42,20 +43,30 @@ def fetch_node_data(node_api_url: str) -> Dict[str, Any]:
         return {}
 
 def format_stats_payload(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Formats the raw node data into the structure expected by the dashboard API."""
+    """
+    Formats the raw node data into the structure expected by the dashboard API.
+    This function is now highly resilient to missing keys.
+    """
     if not data:
         return {}
     
-    # Use .get() with default values to prevent crashes if a key is missing
+    # Safely get nested satellite data
+    first_satellite = {}
+    satellites = data.get('satellites', [])
+    if satellites and isinstance(satellites, list) and len(satellites) > 0:
+        first_satellite = satellites[0] if isinstance(satellites[0], dict) else {}
+
+    # CRITICAL FIX: Use nested .get() for every value to prevent errors
+    # and provide a default of 0 or 0.0 if any key is missing.
     return {
         "disk_total": data.get('diskSpace', {}).get('total', 0),
         "disk_used": data.get('diskSpace', {}).get('used', 0),
         "disk_trash": data.get('diskSpace', {}).get('trash', 0),
         "bandwidth_ingress": data.get('bandwidth', {}).get('ingress', 0),
         "bandwidth_egress": data.get('bandwidth', {}).get('egress', 0),
-        "uptime_score": data.get('satellites', [{}])[0].get('uptimeScore', 0.0),
-        "audit_score": data.get('satellites', [{}])[0].get('auditScore', 0.0),
-        "suspension_score": data.get('satellites', [{}])[0].get('suspensionScore', 0.0),
+        "uptime_score": first_satellite.get('uptimeScore', 0.0),
+        "audit_score": first_satellite.get('auditScore', 0.0),
+        "suspension_score": first_satellite.get('suspensionScore', 0.0),
         "estimated_payout": data.get('estimatedPayout', 0.0),
         "held_amount": data.get('heldAmount', 0.0)
     }
@@ -116,3 +127,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
