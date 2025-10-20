@@ -166,17 +166,9 @@ def main():
                 sno_data = fetch_api_data(node_api, '/sno')
                 satellites_data = fetch_api_data(node_api, '/sno/satellites')
                 payout_data = fetch_api_data(node_api, '/sno/estimated-payout')
-
-                # --- NEW DIAGNOSTIC LOGGING ---
-                logging.info(f"--- RAW DATA DUMP for {node_name} ---")
-                logging.info(f"RAW from /api/sno: {json.dumps(sno_data, indent=2)}")
-                logging.info(f"RAW from /api/sno/satellites: {json.dumps(satellites_data, indent=2)}")
-                logging.info(f"RAW from /api/sno/estimated-payout: {json.dumps(payout_data, indent=2)}")
-                logging.info("------------------------------------")
                 
                 # Aggregate and send
                 stats_payload = aggregate_and_format_payload(sno_data, satellites_data, payout_data)
-                logging.info(f"FORMATTED PAYLOAD for {node_name}: {json.dumps(stats_payload, indent=2)}")
                 submit_stats_to_dashboard(auth_token, stats_payload)
         
         logging.info(f"Sleeping for {POLL_INTERVAL} seconds...")
