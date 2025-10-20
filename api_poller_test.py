@@ -47,16 +47,14 @@ def aggregate_and_format_payload(sno_data: Dict, satellites_data: List, payout_d
     """
     Aggregates data from all endpoints and computes derived metrics.
     """
-    # --- Node Info ---
-    node_id = sno_data.get('nodeID', 'N/A')
-    wallet = sno_data.get('wallet', 'N/A')
-    version = sno_data.get('version', 'N/A')
-
+    if not sno_data:
+        return {}
+        
     # --- Disk Space Calculation ---
     disk_space = sno_data.get('diskSpace', {}) or {}
     disk_used = disk_space.get('used', 0)
     disk_available = disk_space.get('available', 0)
-    disk_total = disk_used + disk_available  # As per requirement
+    disk_total = disk_used + disk_available
     disk_trash = disk_space.get('trash', 0)
 
     # --- Bandwidth ---
@@ -86,11 +84,9 @@ def aggregate_and_format_payload(sno_data: Dict, satellites_data: List, payout_d
     estimated_payout = payout_month.get('total', 0.0)
     held_amount = payout_month.get('held', 0.0)
 
-    # --- Assemble Final Payload ---
+    # --- Assemble Final Payload for the Server ---
     return {
-        "node_id": node_id,
-        "wallet": wallet,
-        "version": version,
+        "version": sno_data.get('version', 'N/A'),
         "disk_total": disk_total,
         "disk_used": disk_used,
         "disk_trash": disk_trash,
@@ -129,25 +125,30 @@ def main():
         print(f"   Using Base API URL: {node_api}")
 
         # --- Step 1: Fetch data from all endpoints ---
-        print("\n2. Fetching data from all required API endpoints...")
+        print("\n2. Fetching RAW data from all required API endpoints...")
         sno_data = fetch_api_data(node_api, '/sno')
         satellites_data = fetch_api_data(node_api, '/sno/satellites')
         payout_data = fetch_api_data(node_api, '/sno/estimated-payout')
         
-        print("   - /api/sno: " + ("Success" if sno_data else "Failed"))
-        print("   - /api/sno/satellites: " + ("Success" if satellites_data else "Failed"))
-        print("   - /api/sno/estimated-payout: " + ("Success" if payout_data else "Failed"))
-        
+        # --- Step 2: Print RAW data for debugging ---
+        print("\n3. RAW JSON Responses Received:")
+        print("\n--- RAW from /api/sno ---")
+        print(json.dumps(sno_data, indent=4))
+        print("\n--- RAW from /api/sno/satellites ---")
+        print(json.dumps(satellites_data, indent=4))
+        print("\n--- RAW from /api/sno/estimated-payout ---")
+        print(json.dumps(payout_data, indent=4))
+
         if not sno_data:
             print("\n   -> CRITICAL: Cannot proceed without data from /api/sno. Skipping node.")
             print("-" * 60)
             continue
             
-        # --- Step 2: Aggregate, compute, and format the payload ---
-        print("\n3. Aggregating and formatting the final payload...")
+        # --- Step 3: Aggregate, compute, and format the payload ---
+        print("\n4. Aggregating and formatting the final payload...")
         final_payload = aggregate_and_format_payload(sno_data, satellites_data, payout_data)
 
-        print("\n4. FINAL AGGREGATED PAYLOAD:")
+        print("\n5. FINAL AGGREGATED PAYLOAD (what would be sent to the server):")
         print(json.dumps(final_payload, indent=4))
 
         print("\n--- Test for this node complete ---")
