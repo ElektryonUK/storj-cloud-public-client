@@ -48,9 +48,10 @@ def fetch_api_data(base_url: str, endpoint: str) -> Dict[str, Any]:
         logging.error(f"Invalid JSON response from {url}")
         return {}
 
-def aggregate_and_format_payload(sno_data: Dict, satellites_data: List, payout_data: Dict) -> Dict[str, Any]:
+def aggregate_and_format_payload(sno_data: Dict, satellites_data: Dict, payout_data: Dict) -> Dict[str, Any]:
     """
-    Aggregates data from all endpoints and computes derived metrics.
+    DEFINITIVE FIX: Aggregates data from all endpoints and computes derived metrics
+    based on the actual raw JSON structure.
     """
     if not sno_data:
         return {}
@@ -62,21 +63,29 @@ def aggregate_and_format_payload(sno_data: Dict, satellites_data: List, payout_d
     disk_total = disk_used + disk_available
     disk_trash = disk_space.get('trash', 0)
 
-    # --- Bandwidth ---
-    bandwidth = sno_data.get('bandwidth', {}) or {}
-    bandwidth_ingress = bandwidth.get('ingress', 0)
-    bandwidth_egress = bandwidth.get('egress', 0)
+    # --- Bandwidth Calculation (from satellites endpoint) ---
+    bandwidth_ingress = 0
+    bandwidth_egress = 0
+    daily_bw = (satellites_data or {}).get('bandwidthDaily', [])
+    if isinstance(daily_bw, list) and len(daily_bw) > 0:
+        latest_day = daily_bw[-1] # Get the most recent day's data
+        if isinstance(latest_day, dict):
+            ingress_data = latest_day.get('ingress', {}) or {}
+            egress_data = latest_day.get('egress', {}) or {}
+            bandwidth_ingress = ingress_data.get('repair', 0) + ingress_data.get('usage', 0)
+            bandwidth_egress = egress_data.get('repair', 0) + egress_data.get('audit', 0) + egress_data.get('usage', 0)
 
-    # --- Satellite Score Averaging ---
+    # --- Satellite Score Averaging (from audits array) ---
     total_uptime = 0.0
     total_audit = 0.0
     total_suspension = 0.0
+    audits_list = (satellites_data or {}).get('audits', [])
     satellite_count = 0
-    if isinstance(satellites_data, list) and len(satellites_data) > 0:
-        satellite_count = len(satellites_data)
-        for sat in satellites_data:
+    if isinstance(audits_list, list) and len(audits_list) > 0:
+        satellite_count = len(audits_list)
+        for sat in audits_list:
             if isinstance(sat, dict):
-                total_uptime += sat.get('uptimeScore', 0.0)
+                total_uptime += sat.get('onlineScore', 0.0)
                 total_audit += sat.get('auditScore', 0.0)
                 total_suspension += sat.get('suspensionScore', 0.0)
     
@@ -86,7 +95,7 @@ def aggregate_and_format_payload(sno_data: Dict, satellites_data: List, payout_d
 
     # --- Payout Data ---
     payout_month = payout_data.get('currentMonth', {}) or {}
-    estimated_payout = payout_month.get('total', 0.0)
+    estimated_payout = payout_month.get('payout', 0.0)
     held_amount = payout_month.get('held', 0.0)
 
     # --- Assemble Final Payload for the Server ---
