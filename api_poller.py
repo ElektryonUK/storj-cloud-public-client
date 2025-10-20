@@ -50,7 +50,7 @@ def fetch_api_data(base_url: str, endpoint: str) -> Dict[str, Any]:
 
 def aggregate_and_format_payload(sno_data: Dict, satellites_data: Dict, payout_data: Dict) -> Dict[str, Any]:
     """
-    DEFINITIVE FIX: Aggregates data from all endpoints and computes derived metrics
+    Aggregates data from all endpoints and computes derived metrics
     based on the actual raw JSON structure.
     """
     if not sno_data:
@@ -68,7 +68,7 @@ def aggregate_and_format_payload(sno_data: Dict, satellites_data: Dict, payout_d
     bandwidth_egress = 0
     daily_bw = (satellites_data or {}).get('bandwidthDaily', [])
     if isinstance(daily_bw, list) and len(daily_bw) > 0:
-        latest_day = daily_bw[-1] # Get the most recent day's data
+        latest_day = daily_bw[-1]
         if isinstance(latest_day, dict):
             ingress_data = latest_day.get('ingress', {}) or {}
             egress_data = latest_day.get('egress', {}) or {}
@@ -166,9 +166,17 @@ def main():
                 sno_data = fetch_api_data(node_api, '/sno')
                 satellites_data = fetch_api_data(node_api, '/sno/satellites')
                 payout_data = fetch_api_data(node_api, '/sno/estimated-payout')
+
+                # --- NEW DIAGNOSTIC LOGGING ---
+                logging.info(f"--- RAW DATA DUMP for {node_name} ---")
+                logging.info(f"RAW from /api/sno: {json.dumps(sno_data, indent=2)}")
+                logging.info(f"RAW from /api/sno/satellites: {json.dumps(satellites_data, indent=2)}")
+                logging.info(f"RAW from /api/sno/estimated-payout: {json.dumps(payout_data, indent=2)}")
+                logging.info("------------------------------------")
                 
                 # Aggregate and send
                 stats_payload = aggregate_and_format_payload(sno_data, satellites_data, payout_data)
+                logging.info(f"FORMATTED PAYLOAD for {node_name}: {json.dumps(stats_payload, indent=2)}")
                 submit_stats_to_dashboard(auth_token, stats_payload)
         
         logging.info(f"Sleeping for {POLL_INTERVAL} seconds...")
