@@ -28,7 +28,10 @@ LOG_LINE_REGEX = re.compile(
 )
 
 def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
-    """Parses a single log line into a structured dictionary."""
+    """
+    DEFINITIVE FIX: Parses a single log line, correctly extracting nested JSON
+    and handling the 'Remote Address' key.
+    """
     match = LOG_LINE_REGEX.match(line)
     if not match:
         return None
@@ -48,11 +51,13 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
         # Not a JSON message, which is fine. The original message is kept.
         pass
 
-    # CRITICAL FIX: Correctly parse Remote Address and strip port
+    # Correctly parse Remote Address and strip port
     remote_ip = None
-    remote_address = json_data.get('Remote Address') # Correct key with space
+    # The key from the raw logs is "Remote Address" with a space
+    remote_address = json_data.get('Remote Address')
     if remote_address and isinstance(remote_address, str):
-        remote_ip = remote_address.split(':')[0] # Strip the port
+        # Split the IP from the port
+        remote_ip = remote_address.split(':')[0]
 
     return {
         'timestamp': data['timestamp'],
@@ -60,7 +65,7 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
         'event_type': data['subsystem'],
         'message': str(data.get('message', '')),
         'remote_ip': remote_ip,
-        'log_action': json_data.get('Action') # NEW: Extract the action
+        'log_action': json_data.get('Action')
     }
 
 def follow_log_file(filepath: str):
