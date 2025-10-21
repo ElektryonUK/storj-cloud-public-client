@@ -29,37 +29,38 @@ LOG_LINE_REGEX = re.compile(
 
 def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     """
-    DEFINITIVE FIX: Parses a single log line, correctly extracting nested JSON
-    and handling the 'Remote Address' key.
+    Parses a single log line with extensive debugging output.
     """
+    logging.info(f"--- Parsing Raw Line ---")
+    logging.info(f"RAW LINE: {line.strip()}")
+
     match = LOG_LINE_REGEX.match(line)
     if not match:
+        logging.warning("Line did not match main log regex. Skipping.")
         return None
 
     data = match.groupdict()
     json_data = {}
     
     try:
-        # The core message is often a JSON string
         json_data = json.loads(data['message'])
-        # If the JSON contains a clearer message, use it
+        logging.info(f"Successfully parsed nested JSON: {json.dumps(json_data)}")
         if 'error' in json_data:
             data['message'] = json_data['error']
         elif 'message' in json_data:
             data['message'] = json_data['message']
     except (json.JSONDecodeError, TypeError):
-        # Not a JSON message, which is fine. The original message is kept.
+        logging.info("No nested JSON found in message part.")
         pass
 
-    # Correctly parse Remote Address and strip port
     remote_ip = None
-    # The key from the raw logs is "Remote Address" with a space
     remote_address = json_data.get('Remote Address')
+    logging.info(f"Found 'Remote Address' key with value: {remote_address}")
     if remote_address and isinstance(remote_address, str):
-        # Split the IP from the port
         remote_ip = remote_address.split(':')[0]
+        logging.info(f"Successfully extracted IP: {remote_ip}")
 
-    return {
+    final_payload = {
         'timestamp': data['timestamp'],
         'severity': data['level'],
         'event_type': data['subsystem'],
@@ -67,6 +68,11 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
         'remote_ip': remote_ip,
         'log_action': json_data.get('Action')
     }
+    
+    logging.info(f"FINAL PARSED DATA: {json.dumps(final_payload)}")
+    logging.info("--------------------------")
+    
+    return final_payload
 
 def follow_log_file(filepath: str):
     """Yields new lines from a file as they are written."""
@@ -101,6 +107,7 @@ def submit_logs_to_dashboard(node_auth_token: str, logs: List[Dict[str, Any]]):
         'X-Node-Auth-Token': node_auth_token
     }
     try:
+        logging.info(f"Submitting a batch of {len(logs)} log entries...")
         response = requests.post(f"{DASHBOARD_API_URL}/data/logs", headers=headers, json={'logs': logs}, timeout=30)
         response.raise_for_status()
         logging.info(f"Successfully submitted {len(logs)} log entries for token ...{node_auth_token[-4:]}")
@@ -164,4 +171,5 @@ if __name__ == "__main__":
     
     node_name_to_process = sys.argv[1]
     main(node_name_to_process)
+
 
