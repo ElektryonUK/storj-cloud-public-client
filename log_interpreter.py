@@ -16,7 +16,7 @@ logging.basicConfig(
 # Load global configuration from environment variables
 DASHBOARD_API_URL = os.getenv('DASHBOARD_API_URL')
 LOG_POLL_INTERVAL = int(os.getenv('LOG_POLL_INTERVAL', 60)) # seconds
-BATCH_SIZE = 50
+BATCH_SIZE = 10
 CONFIG_FILE_PATH = os.getenv('CONFIG_FILE_PATH', '/etc/storj-cloud-agent/config.json')
 
 # --- Log Parsing Logic ---
