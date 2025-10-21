@@ -123,7 +123,7 @@ ExecStart=${VENV_DIR}/bin/python3 log_interpreter.py %i
 Restart=always
 Environment="DASHBOARD_API_URL=${DASHBOARD_API_URL}"
 Environment="CONFIG_FILE_PATH=${CONFIG_FILE}"
-Environment="LOG_POLL_INTERVAL=10"
+Environment="LOG_POLL_INTERVAL=5"
 
 [Install]
 WantedBy=multi-user.target
