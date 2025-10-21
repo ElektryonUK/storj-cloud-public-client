@@ -29,7 +29,8 @@ LOG_LINE_REGEX = re.compile(
 
 def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     """
-    Parses a single log line with extensive debugging output.
+    DEFINITIVE FIX v2: Parses a single log line, correctly finding and
+    extracting the JSON payload even if it's preceded by text.
     """
     logging.info(f"--- Parsing Raw Line ---")
     logging.info(f"RAW LINE: {line.strip()}")
@@ -41,16 +42,29 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
 
     data = match.groupdict()
     json_data = {}
-    
+    message_text = data.get('message', '')
+
     try:
-        json_data = json.loads(data['message'])
-        logging.info(f"Successfully parsed nested JSON: {json.dumps(json_data)}")
-        if 'error' in json_data:
-            data['message'] = json_data['error']
-        elif 'message' in json_data:
-            data['message'] = json_data['message']
+        # Find the start of the JSON object within the message
+        json_start_index = message_text.find('{')
+        if json_start_index != -1:
+            json_string = message_text[json_start_index:]
+            json_data = json.loads(json_string)
+            logging.info(f"Successfully parsed nested JSON: {json.dumps(json_data)}")
+            
+            # If there was text before the JSON, use that as the primary message
+            if json_start_index > 0:
+                data['message'] = message_text[:json_start_index].strip()
+            # Otherwise, check for a clearer message inside the JSON
+            elif 'error' in json_data:
+                data['message'] = json_data['error']
+            elif 'message' in json_data:
+                data['message'] = json_data['message']
+        else:
+            logging.info("No nested JSON found in message part.")
+
     except (json.JSONDecodeError, TypeError):
-        logging.info("No nested JSON found in message part.")
+        logging.warning(f"Could not parse JSON from message fragment: {message_text}")
         pass
 
     remote_ip = None
@@ -116,19 +130,21 @@ def submit_logs_to_dashboard(node_auth_token: str, logs: List[Dict[str, Any]]):
 
 # --- Main Execution Logic ---
 def get_node_config_by_name(node_name: str) -> Optional[Dict[str, Any]]:
-    """Finds a specific node's configuration by its name."""
+    """Finds a specific node's configuration by its name with detailed error handling."""
     try:
         with open(CONFIG_FILE_PATH, 'r') as f:
             config = json.load(f)
             for node in config.get('nodes', []):
                 if node.get('name') == node_name:
                     return node
+            logging.warning(f"Node '{node_name}' not found in the configuration file.")
             return None
     except FileNotFoundError:
-        logging.error(f"Config file not found: {CONFIG_FILE_PATH}")
+        logging.error(f"Configuration file not found at: {CONFIG_FILE_PATH}")
         return None
     except json.JSONDecodeError as e:
-        logging.error(f"Failed to parse '{CONFIG_FILE_PATH}': {e}")
+        logging.error(f"Failed to parse '{CONFIG_FILE_PATH}'. It is not valid JSON.")
+        logging.error(f"JSONDecodeError: {e}")
         return None
 
 def main(target_node_name: str):
@@ -171,5 +187,4 @@ if __name__ == "__main__":
     
     node_name_to_process = sys.argv[1]
     main(node_name_to_process)
-
 
