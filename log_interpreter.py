@@ -20,17 +20,18 @@ BATCH_SIZE = 50
 CONFIG_FILE_PATH = os.getenv('CONFIG_FILE_PATH', '/etc/storj-cloud-agent/config.json')
 
 # --- Log Parsing Logic ---
+# DEFINITIVE FIX: New regex to handle optional action verbs before the message
 LOG_LINE_REGEX = re.compile(
     r'^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s+'
-    r'(?P<level>INFO|WARN|ERROR|FATAL|DEBUG)\s+'
-    r'(?P<subsystem>[^ ]+)\s+'
+    r'(?P<level>\S+)\s+'
+    r'(?P<subsystem>\S+)\s*'
     r'(?P<message>.*)'
 )
 
 def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     """
-    DEFINITIVE FIX v2: Parses a single log line, correctly finding and
-    extracting the JSON payload even if it's preceded by text.
+    DEFINITIVE FIX v3: Parses a single log line, correctly separating text prefixes
+    from the JSON payload.
     """
     logging.info(f"--- Parsing Raw Line ---")
     logging.info(f"RAW LINE: {line.strip()}")
@@ -42,30 +43,35 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
 
     data = match.groupdict()
     json_data = {}
-    message_text = data.get('message', '')
+    message_text = data.get('message', '').strip()
+    
+    event_type = data['subsystem']
+    log_message = message_text
 
-    try:
-        # Find the start of the JSON object within the message
-        json_start_index = message_text.find('{')
-        if json_start_index != -1:
-            json_string = message_text[json_start_index:]
+    # Find the start of the JSON object
+    json_start_index = message_text.find('{')
+    if json_start_index != -1:
+        json_string = message_text[json_start_index:]
+        try:
             json_data = json.loads(json_string)
             logging.info(f"Successfully parsed nested JSON: {json.dumps(json_data)}")
             
-            # If there was text before the JSON, use that as the primary message
-            if json_start_index > 0:
-                data['message'] = message_text[:json_start_index].strip()
-            # Otherwise, check for a clearer message inside the JSON
-            elif 'error' in json_data:
-                data['message'] = json_data['error']
-            elif 'message' in json_data:
-                data['message'] = json_data['message']
-        else:
-            logging.info("No nested JSON found in message part.")
-
-    except (json.JSONDecodeError, TypeError):
-        logging.warning(f"Could not parse JSON from message fragment: {message_text}")
-        pass
+            # If there was text before the JSON, it's part of the event type
+            prefix_text = message_text[:json_start_index].strip()
+            if prefix_text:
+                event_type = f"{data['subsystem']}:{prefix_text}"
+                log_message = prefix_text # Use the verb as the main message
+            
+            # If the JSON itself contains a clearer error message, prefer that
+            if 'error' in json_data:
+                log_message = json_data['error']
+            
+        except json.JSONDecodeError:
+            logging.warning(f"Could not parse JSON from message fragment: {json_string}")
+            # If parsing fails, treat the whole thing as a plain message
+            pass
+    else:
+        logging.info("No nested JSON found in message part.")
 
     remote_ip = None
     remote_address = json_data.get('Remote Address')
@@ -77,8 +83,8 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     final_payload = {
         'timestamp': data['timestamp'],
         'severity': data['level'],
-        'event_type': data['subsystem'],
-        'message': str(data.get('message', '')),
+        'event_type': event_type,
+        'message': log_message,
         'remote_ip': remote_ip,
         'log_action': json_data.get('Action')
     }
