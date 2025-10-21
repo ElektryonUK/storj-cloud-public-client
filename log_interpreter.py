@@ -20,7 +20,6 @@ BATCH_SIZE = 50
 CONFIG_FILE_PATH = os.getenv('CONFIG_FILE_PATH', '/etc/storj-cloud-agent/config.json')
 
 # --- Log Parsing Logic ---
-# DEFINITIVE FIX: New regex to handle optional action verbs before the message
 LOG_LINE_REGEX = re.compile(
     r'^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s+'
     r'(?P<level>\S+)\s+'
@@ -30,15 +29,10 @@ LOG_LINE_REGEX = re.compile(
 
 def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     """
-    DEFINITIVE FIX v3: Parses a single log line, correctly separating text prefixes
-    from the JSON payload.
+    Parses a single log line, extracting all relevant data for the heatmap.
     """
-    logging.info(f"--- Parsing Raw Line ---")
-    logging.info(f"RAW LINE: {line.strip()}")
-
     match = LOG_LINE_REGEX.match(line)
     if not match:
-        logging.warning("Line did not match main log regex. Skipping.")
         return None
 
     data = match.groupdict()
@@ -54,45 +48,29 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
         json_string = message_text[json_start_index:]
         try:
             json_data = json.loads(json_string)
-            logging.info(f"Successfully parsed nested JSON: {json.dumps(json_data)}")
-            
-            # If there was text before the JSON, it's part of the event type
             prefix_text = message_text[:json_start_index].strip()
             if prefix_text:
                 event_type = f"{data['subsystem']}:{prefix_text}"
-                log_message = prefix_text # Use the verb as the main message
-            
-            # If the JSON itself contains a clearer error message, prefer that
-            if 'error' in json_data:
+                log_message = prefix_text
+            elif 'error' in json_data:
                 log_message = json_data['error']
-            
         except json.JSONDecodeError:
-            logging.warning(f"Could not parse JSON from message fragment: {json_string}")
-            # If parsing fails, treat the whole thing as a plain message
             pass
-    else:
-        logging.info("No nested JSON found in message part.")
 
     remote_ip = None
     remote_address = json_data.get('Remote Address')
-    logging.info(f"Found 'Remote Address' key with value: {remote_address}")
     if remote_address and isinstance(remote_address, str):
         remote_ip = remote_address.split(':')[0]
-        logging.info(f"Successfully extracted IP: {remote_ip}")
 
-    final_payload = {
+    return {
         'timestamp': data['timestamp'],
         'severity': data['level'],
         'event_type': event_type,
         'message': log_message,
         'remote_ip': remote_ip,
-        'log_action': json_data.get('Action')
+        'log_action': json_data.get('Action'),
+        'data_size': json_data.get('Size') # NEW: Extract the data transfer size
     }
-    
-    logging.info(f"FINAL PARSED DATA: {json.dumps(final_payload)}")
-    logging.info("--------------------------")
-    
-    return final_payload
 
 def follow_log_file(filepath: str):
     """Yields new lines from a file as they are written."""
@@ -127,7 +105,6 @@ def submit_logs_to_dashboard(node_auth_token: str, logs: List[Dict[str, Any]]):
         'X-Node-Auth-Token': node_auth_token
     }
     try:
-        logging.info(f"Submitting a batch of {len(logs)} log entries...")
         response = requests.post(f"{DASHBOARD_API_URL}/data/logs", headers=headers, json={'logs': logs}, timeout=30)
         response.raise_for_status()
         logging.info(f"Successfully submitted {len(logs)} log entries for token ...{node_auth_token[-4:]}")
@@ -143,10 +120,9 @@ def get_node_config_by_name(node_name: str) -> Optional[Dict[str, Any]]:
             for node in config.get('nodes', []):
                 if node.get('name') == node_name:
                     return node
-            logging.warning(f"Node '{node_name}' not found in the configuration file.")
             return None
     except FileNotFoundError:
-        logging.error(f"Configuration file not found at: {CONFIG_FILE_PATH}")
+        logging.error(f"Config file not found: {CONFIG_FILE_PATH}")
         return None
     except json.JSONDecodeError as e:
         logging.error(f"Failed to parse '{CONFIG_FILE_PATH}'. It is not valid JSON.")
