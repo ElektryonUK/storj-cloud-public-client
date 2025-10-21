@@ -34,23 +34,33 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
         return None
 
     data = match.groupdict()
+    json_data = {}
     
     try:
-        json_message = json.loads(data['message'])
-        if 'error' in json_message:
-            data['message'] = json_message['error']
-        elif 'message' in json_message:
-            data['message'] = json_message['message']
-        data.update(json_message)
+        # The core message is often a JSON string
+        json_data = json.loads(data['message'])
+        # If the JSON contains a clearer message, use it
+        if 'error' in json_data:
+            data['message'] = json_data['error']
+        elif 'message' in json_data:
+            data['message'] = json_data['message']
     except (json.JSONDecodeError, TypeError):
+        # Not a JSON message, which is fine. The original message is kept.
         pass
+
+    # CRITICAL FIX: Correctly parse Remote Address and strip port
+    remote_ip = None
+    remote_address = json_data.get('Remote Address') # Correct key with space
+    if remote_address and isinstance(remote_address, str):
+        remote_ip = remote_address.split(':')[0] # Strip the port
 
     return {
         'timestamp': data['timestamp'],
         'severity': data['level'],
         'event_type': data['subsystem'],
         'message': str(data.get('message', '')),
-        'remote_ip': data.get('remote_addr')
+        'remote_ip': remote_ip,
+        'log_action': json_data.get('Action') # NEW: Extract the action
     }
 
 def follow_log_file(filepath: str):
@@ -94,23 +104,19 @@ def submit_logs_to_dashboard(node_auth_token: str, logs: List[Dict[str, Any]]):
 
 # --- Main Execution Logic ---
 def get_node_config_by_name(node_name: str) -> Optional[Dict[str, Any]]:
-    """Finds a specific node's configuration by its name with detailed error handling."""
+    """Finds a specific node's configuration by its name."""
     try:
         with open(CONFIG_FILE_PATH, 'r') as f:
             config = json.load(f)
             for node in config.get('nodes', []):
                 if node.get('name') == node_name:
                     return node
-            # If loop finishes and no node is found
-            logging.warning(f"Node '{node_name}' not found in the configuration file.")
             return None
     except FileNotFoundError:
-        logging.error(f"Configuration file not found at: {CONFIG_FILE_PATH}")
+        logging.error(f"Config file not found: {CONFIG_FILE_PATH}")
         return None
     except json.JSONDecodeError as e:
-        # CRITICAL FIX: Log the specific JSON parsing error
-        logging.error(f"Failed to parse '{CONFIG_FILE_PATH}'. It is not valid JSON.")
-        logging.error(f"JSONDecodeError: {e}")
+        logging.error(f"Failed to parse '{CONFIG_FILE_PATH}': {e}")
         return None
 
 def main(target_node_name: str):
@@ -119,16 +125,15 @@ def main(target_node_name: str):
     
     node_config = get_node_config_by_name(target_node_name)
     if not node_config:
-        logging.critical(f"Could not find or load configuration for node '{target_node_name}'. Exiting.")
-        # We will exit here, and systemd will restart us. This prevents a tight loop if the file is permanently bad.
-        time.sleep(60) # Sleep to avoid rapid restarts
+        logging.critical(f"Could not load config for '{target_node_name}'. Exiting.")
+        time.sleep(60)
         return
 
     log_path = node_config.get('log_file_path')
     auth_token = node_config.get('auth_token')
 
     if not all([log_path, auth_token]):
-        logging.error(f"Node '{target_node_name}' is missing 'log_file_path' or 'auth_token'.")
+        logging.error(f"Node '{target_node_name}' is missing config. Exiting.")
         return
 
     logging.info(f"Beginning to tail log file: {log_path}")
