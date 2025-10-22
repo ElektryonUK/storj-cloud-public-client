@@ -15,8 +15,8 @@ logging.basicConfig(
 
 # Load global configuration from environment variables
 DASHBOARD_API_URL = os.getenv('DASHBOARD_API_URL')
-LOG_POLL_INTERVAL = int(os.getenv('LOG_POLL_INTERVAL', 60)) # seconds
-BATCH_SIZE = 10
+LOG_POLL_INTERVAL = int(os.getenv('LOG_POLL_INTERVAL', 5)) # 5 seconds for testing
+BATCH_SIZE = 50
 CONFIG_FILE_PATH = os.getenv('CONFIG_FILE_PATH', '/etc/storj-cloud-agent/config.json')
 
 # --- Log Parsing Logic ---
@@ -29,7 +29,8 @@ LOG_LINE_REGEX = re.compile(
 
 def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
     """
-    Parses a single log line, extracting all relevant data for the heatmap.
+    Parses a single log line, extracting all available structured data
+    from the JSON payload.
     """
     match = LOG_LINE_REGEX.match(line)
     if not match:
@@ -48,29 +49,63 @@ def parse_log_line(line: str) -> Optional[Dict[str, Any]]:
         json_string = message_text[json_start_index:]
         try:
             json_data = json.loads(json_string)
+            
+            # Use the text prefix as the event or message
             prefix_text = message_text[:json_start_index].strip()
             if prefix_text:
                 event_type = f"{data['subsystem']}:{prefix_text}"
                 log_message = prefix_text
-            elif 'error' in json_data:
+            
+            # If the JSON itself contains a clearer error message, prefer that
+            if 'error' in json_data:
                 log_message = json_data['error']
-        except json.JSONDecodeError:
-            pass
+            
+        except (json.JSONDecodeError, TypeError):
+            # Not a JSON message, or malformed. Keep the raw text.
+            log_message = message_text
 
+    # --- NEW: Extract all available fields ---
+    
+    # Extract IP and strip port
     remote_ip = None
     remote_address = json_data.get('Remote Address')
     if remote_address and isinstance(remote_address, str):
         remote_ip = remote_address.split(':')[0]
+    
+    # Extract duration
+    duration_ms = None
+    duration_str = json_data.get('duration') # e.g., "2.53s" or "120ms"
+    if isinstance(duration_str, str):
+        if duration_str.endswith('ms'):
+            duration_ms = int(float(duration_str[:-2]))
+        elif duration_str.endswith('s'):
+            duration_ms = int(float(duration_str[:-1]) * 1000)
 
-    return {
+    # Determine status (for operations)
+    log_status = 'success' # Default
+    if data['level'] in ['ERROR', 'WARN', 'FATAL']:
+        log_status = 'failed'
+    if 'error' in json_data:
+        log_status = 'failed'
+
+    # Build the final payload for the server
+    final_payload = {
         'timestamp': data['timestamp'],
         'severity': data['level'],
         'event_type': event_type,
         'message': log_message,
+        
+        # New detailed fields
         'remote_ip': remote_ip,
         'log_action': json_data.get('Action'),
-        'data_size': json_data.get('Size') # NEW: Extract the data transfer size
+        'satellite_id': json_data.get('Satellite ID'),
+        'piece_id': json_data.get('Piece ID'),
+        'duration_ms': duration_ms,
+        'data_size': json_data.get('Size'),
+        'log_status': log_status
     }
+    
+    return final_payload
 
 def follow_log_file(filepath: str):
     """Yields new lines from a file as they are written."""
@@ -105,6 +140,7 @@ def submit_logs_to_dashboard(node_auth_token: str, logs: List[Dict[str, Any]]):
         'X-Node-Auth-Token': node_auth_token
     }
     try:
+        logging.info(f"Submitting a batch of {len(logs)} log entries...")
         response = requests.post(f"{DASHBOARD_API_URL}/data/logs", headers=headers, json={'logs': logs}, timeout=30)
         response.raise_for_status()
         logging.info(f"Successfully submitted {len(logs)} log entries for token ...{node_auth_token[-4:]}")
@@ -120,9 +156,10 @@ def get_node_config_by_name(node_name: str) -> Optional[Dict[str, Any]]:
             for node in config.get('nodes', []):
                 if node.get('name') == node_name:
                     return node
+            logging.warning(f"Node '{node_name}' not found in the configuration file.")
             return None
     except FileNotFoundError:
-        logging.error(f"Config file not found: {CONFIG_FILE_PATH}")
+        logging.error(f"Configuration file not found at: {CONFIG_FILE_PATH}")
         return None
     except json.JSONDecodeError as e:
         logging.error(f"Failed to parse '{CONFIG_FILE_PATH}'. It is not valid JSON.")
